@@ -1,7 +1,6 @@
 package sqltyped
 
 import scala.util.parsing.combinator._
-import scala.reflect.runtime.universe.{Type, typeOf}
 
 trait SqlParser extends RegexParsers with Ast.Unresolved with PackratParsers {
   import Ast._
@@ -260,11 +259,11 @@ trait SqlParser extends RegexParsers with Ast.Unresolved with PackratParsers {
 
   private def col(name: String, table: Option[String]) = Column(name, table)
 
-  def constB(b: Boolean)       = const(typeOf[Boolean], b)
-  def constS(s: String)        = const(typeOf[String], s)
-  def constD(d: Double)        = const(typeOf[Double], d)
-  def constL(l: Long)          = const(typeOf[Long], l)
-  def constNull                = const(typeOf[AnyRef], null)
+  def constB(b: Boolean)       = const(Type.Boolean, b)
+  def constS(s: String)        = const(Type.String, s)
+  def constD(d: Double)        = const(Type.Double, d)
+  def constL(l: Long)          = const(Type.Long, l)
+  def constNull                = const(Type.Null, null)
   def const(tpe: Type, x: Any) = Constant[Option[String]](tpe, x)
 
   implicit class KeywordOps(kw: String) {

@@ -1,6 +1,5 @@
 package sqltyped
 
-import scala.reflect.runtime.universe.{Type, typeOf, glb}
 import Ast._
 
 trait Dialect {
@@ -43,8 +42,8 @@ object MysqlDialect extends Dialect {
       else for {
         (tpe0, opt0) <- tpeOf(params(0))
         (tpe1, opt1) <- tpeOf(params(1))
-        tpe = glb(List(tpe0, tpe1, typeOf[java.util.Date]))
-      } yield (List((tpe, opt0), (tpe, opt1)), (typeOf[Int], true))
+        tpe = Type.Date // the glb here before could produce "Timestamp with Date" which would later fail
+      } yield (List((tpe, opt0), (tpe, opt1)), (Type.Int, true))
 
     def ifnull(fname: String, params: List[Expr]): ?[SqlFType] = 
       if (params.length != 2) fail("Expected 2 parameters " + params)
@@ -79,20 +78,20 @@ object MysqlDialect extends Dialect {
       if (params.length < 1) fail("Expected at least 1 parameter")
       else for {
         in <- sequence(params map tpeOf)
-      } yield (in, (typeOf[String], in.map(_._2).forall(identity)))
+      } yield (in, (Type.String, in.map(_._2).forall(identity)))
 
     private def castToType(orig: Type, target: Expr) = target match {
       case TypeExpr(d) => d.name match {
-        case "date" => (typeOf[java.sql.Date], true).ok
-        case "datetime" => (typeOf[java.sql.Timestamp], true).ok
-        case "time" => (typeOf[java.sql.Time], true).ok
-        case "char" => (typeOf[String], false).ok
-        case "binary" => (typeOf[String], false).ok
-        case "decimal" => (typeOf[Double], false).ok
-        case "signed" if orig == typeOf[Long] => (typeOf[Long], false).ok
-        case "signed" => (typeOf[Int], false).ok
-        case "unsigned" if orig == typeOf[Long] => (typeOf[Long], false).ok
-        case "unsigned" => (typeOf[Int], false).ok
+        case "date" => (Type.Date, true).ok
+        case "datetime" => (Type.Timestamp, true).ok
+        case "time" => (Type.Time, true).ok
+        case "char" => (Type.String, false).ok
+        case "binary" => (Type.String, false).ok
+        case "decimal" => (Type.Double, false).ok
+        case "signed" if orig == Type.Long => (Type.Long, false).ok
+        case "signed" => (Type.Int, false).ok
+        case "unsigned" if orig == Type.Long => (Type.Long, false).ok
+        case "unsigned" => (Type.Int, false).ok
         case x => fail(s"Unsupported type '$target' in cast operation")
       }
       case e => fail(s"Expected a data type, got '$e'")
@@ -102,8 +101,6 @@ object MysqlDialect extends Dialect {
   val parser = MysqlParser
 
   object MysqlParser extends SqlParser {
-    import scala.reflect.runtime.universe.typeOf
-
     override def insert = "insert".i <~ opt("ignore".i)
     override def update = "update".i <~ opt("ignore".i)
 
@@ -118,7 +115,7 @@ object MysqlDialect extends Dialect {
 
     override def quoteChar = ("\"" | "`")
  
-    override def extraTerms = MysqlParser.interval
+    override def extraTerms = interval
 
     override def dataTypes = List(
         precision1("binary")
@@ -159,7 +156,7 @@ object MysqlDialect extends Dialect {
     )
 
     lazy val intervalAmount = opt("'") ~> numericLit <~ opt("'")
-    lazy val interval = "interval".i ~> intervalAmount ~ timeUnit ^^ { case x ~ _ => const(typeOf[java.util.Date], x) }
+    lazy val interval = "interval".i ~> intervalAmount ~ timeUnit ^^ { case x ~ _ => const(Type.Date, x) }
 
     lazy val timeUnit = (
         "microsecond".i 

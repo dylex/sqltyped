@@ -123,7 +123,7 @@ object SqlMacro {
       c.enclosingPosition.withPoint(wrappingPos(List(c.prefix.tree)).startOrPoint + f.column + lineOffset)
     }
 
-    def dbConfig = for {
+    val dbConfig = for {
       url      <- sysProp("sqltyped.url")
       driver   <- sysProp("sqltyped.driver")
       username <- sysProp("sqltyped.username")
@@ -133,12 +133,20 @@ object SqlMacro {
     def generateCode(meta: TypedStatement) =
       codeGen(meta, sql, c, keys, inputsInferred)(config, sqlExpr)
 
-    def fallback = for {
+    /* Collect both jdbc and inferred metadata.  The reason for this is that
+     * schemacrawler mapped type classes are not accurate for custom types,
+     * while jdbc's are.  We then merge these back together which allows using
+     * the more complete metadata from inference and the more accurate types
+     * from jdbc, as well as basic checking to make sure the inferred types
+     * match.
+     */
+
+    val jdbc = for {
       db   <- dbConfig
       meta <- Jdbc.infer(db, sql)
     } yield meta
 
-    (for {
+    val meta = for {
       db        <- dbConfig
       dialect   = Dialect.choose(db.driver)
       parser    = dialect.parser
@@ -150,16 +158,50 @@ object SqlMacro {
       typer     = dialect.typer(schema, resolved)
       typed     <- typer.infer(useInputTags)
       meta      <- new Analyzer(typer).refine(resolved, typed)
-    } yield meta) fold (
-      fail => fallback fold ( 
-        _ => c.abort(toPosition(fail), fail.message), 
-        meta => { 
-          c.warning(toPosition(fail), fail.message + "\nFallback to JDBC metadata. Please file a bug at https://github.com/jonifreeman/sqltyped/issues")
-          generateCode(meta) 
-        }
-      ),
-      meta => generateCode(meta)
+    } yield meta
+
+    val bug = "Please file a bug at https://github.com/jonifreeman/sqltyped/issues"
+
+    val merged = jdbc fold (
+      _ => meta,
+      jdbc => {
+        meta fold (
+          fail => {
+            c.warning(toPosition(fail), fail.message + "\nFallback to JDBC metadata. " + bug)
+            Jdbc.typeMetaStatement(jdbc).ok
+          },
+          meta => mergeMetaStatement(meta, jdbc)
+        )
+      }
     )
+    
+    merged fold (
+      fail => c.abort(toPosition(fail), fail.message + "\n" + bug), 
+      meta => generateCode(meta) 
+    )
+  }
+
+  def mergeMetaStatement(meta: TypedStatement, jdbc: MetaStatement): ?[TypedStatement] = {
+    def mergeType(meta: Type, jdbc: Type): ?[Type] = (meta, jdbc) match {
+      case (UnknownType, t) => t.ok
+      case (t, UnknownType) => t.ok
+      case (mt, jt) if mt.jdbcType != jt.jdbcType => fail("JDBC and inferred type don't match")
+      case (_, t) => t.ok // prefer jdbc custom types over schemacrawler's
+    }
+    def mergeValue(meta: TypedValue, jdbc: MetaValue): ?[TypedValue] = for {
+      tpe <- mergeType(meta.tpe, jdbc.tpe)
+    } yield TypedValue(meta.name, tpe, meta.nullable && jdbc.nullable, meta.tag, meta.term)
+    def mergeLists(meta: List[TypedValue], jdbc: List[MetaValue]): ?[List[TypedValue]] =
+      if (jdbc.isEmpty) meta.ok else {
+        if (meta.lengthCompare(jdbc.length) != 0)
+          fail("JDBC and inferred counts don't match")
+        else
+          sequence(meta.zip(jdbc).map({ case (m,j) => mergeValue(m,j) }))
+      }
+    for {
+      input <- mergeLists(meta.input, jdbc.input)
+      output <- mergeLists(meta.output, jdbc.output)
+    } yield meta.copy(input = input, output = output)
   }
 
   def codeGen[A: c.WeakTypeTag, B: c.WeakTypeTag]
@@ -178,8 +220,13 @@ object SqlMacro {
       } else getValue(x, pos)
 
     def getValue(x: TypedValue, pos: Int) = {
-      def baseValue = Typed(Apply(Select(Ident(newTermName("rs")), newTermName(rsGetterName(x))), 
-                                  List(Literal(Constant(pos)))), scalaBaseType(x))
+      val getValue = Apply(Select(Ident(newTermName("rs")), newTermName(rsGetterName(x))), 
+        List(Literal(Constant(pos))))
+      val baseValue = Typed(x.tpe match {
+          case NullType => Literal(Constant(()))
+          case CustomType(_, cls) => TypeApply(Select(getValue, newTermName("asInstanceOf")), List(Ident(c.mirror.staticClass(cls))))
+          case _ => getValue
+        }, scalaBaseType(x))
       
       x.tag flatMap(t => tagType(t)) map (tagged =>
         Apply(
@@ -190,7 +237,7 @@ object SqlMacro {
       ) getOrElse baseValue
     }
 
-    def scalaBaseType(x: TypedValue) = Ident(c.mirror.staticClass(x.tpe.typeSymbol.fullName))
+    def scalaBaseType(x: TypedValue) = Ident(c.mirror.staticClass(x.tpe.scalaType))
 
     def scalaType(x: TypedValue) = {
       x.tag flatMap (t => tagType(t)) map (tagged =>
@@ -219,22 +266,20 @@ object SqlMacro {
     def stmtSetterName(x: TypedValue) = "set" + javaName(x)
     def rsGetterName(x: TypedValue)   = "get" + javaName(x)
 
-    def javaName(x: TypedValue) = 
-      if (typeName(x) == "AnyRef" || typeName(x) == "Any") "Object" else typeName(x)
-
-    def typeName(x: TypedValue) = x.tpe.typeSymbol.name.toString
+    def javaName(x: TypedValue) = x.tpe.name
 
     def setParam(x: TypedValue, pos: Int) =
-      if (x.nullable) 
+      // XXX: NullType should be handled somehow
+      if (x.nullable)
         If(Select(Ident(newTermName("i" + pos)), newTermName("isDefined")), 
            Apply(Select(Ident(newTermName("stmt")), newTermName(stmtSetterName(x))), List(Literal(Constant(pos+1)), coerce(x, Select(Ident(newTermName("i" + pos)), newTermName("get"))))), 
-           Apply(Select(Ident(newTermName("stmt")), newTermName("setObject")), List(Literal(Constant(pos+1)), Literal(Constant(null)))))
+           Apply(Select(Ident(newTermName("stmt")), newTermName("setNull")), List(Literal(Constant(pos+1)), Literal(Constant(x.tpe.jdbcType)))))
       else
         Apply(Select(Ident(newTermName("stmt")), newTermName(stmtSetterName(x))), 
               List(Literal(Constant(pos+1)), coerce(x, Ident(newTermName("i" + pos)))))
 
     def coerce(x: TypedValue, i: Tree) = {
-      if (typeName(x) == "BigDecimal")
+      if (x.tpe.name == "BigDecimal")
         Apply(Select(i, newTermName("underlying")), List())
       else i
     }

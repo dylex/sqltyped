@@ -4,7 +4,10 @@ import schemacrawler.schemacrawler._
 import schemacrawler.utility.SchemaCrawlerUtility
 
 case class DbConfig(url: String, driver: String, username: String, password: String, schema: Option[String]) {
-  def getConnection = java.sql.DriverManager.getConnection(url, username, password)
+  def getConnection = {
+    Class.forName(driver)
+    java.sql.DriverManager.getConnection(url, username, password)
+  }
 }
 
 class DbSchema(db : schemacrawler.schema.Database, val schema : schemacrawler.schema.Schema) {
@@ -13,7 +16,6 @@ class DbSchema(db : schemacrawler.schema.Database, val schema : schemacrawler.sc
 
 object DbSchema {
   def read(config: DbConfig): ?[DbSchema] = try {
-    Class.forName(config.driver)
     val options = new SchemaCrawlerOptions
     val level = new SchemaInfoLevel
     level.setRetrieveTables(true)

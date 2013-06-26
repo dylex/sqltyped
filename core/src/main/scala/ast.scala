@@ -1,7 +1,5 @@
 package sqltyped
 
-import scala.reflect.runtime.universe.{Type, typeOf}
-
 private[sqltyped] object Ast {
   // Types used for AST when references to tables are not yet resolved 
   // (table is optional string reference).
