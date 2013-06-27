@@ -46,13 +46,13 @@ object SqlMacro {
       (c: Context)
       (s: c.Expr[String])
       (config: c.Expr[Configuration[A, B]]): c.Expr[Any] = 
-    sqlImpl0(c, useInputTags = false, keys = false)(s)(config)
+    sqlImpl0(c)(s)(config)
 
   def sqltImpl[A: c.WeakTypeTag, B: c.WeakTypeTag]
       (c: Context)
       (s: c.Expr[String])
       (config: c.Expr[Configuration[A, B]]): c.Expr[Any] = 
-    sqlImpl0(c, useInputTags = true, keys = false)(s)(config)
+    sqlImpl0(c, useInputTags = true)(s)(config)
 
   def sqlkImpl[A: c.WeakTypeTag, B: c.WeakTypeTag]
       (c: Context)
@@ -60,8 +60,14 @@ object SqlMacro {
       (config: c.Expr[Configuration[A, B]]): c.Expr[Any] = 
     sqlImpl0(c, useInputTags = false, keys = true)(s)(config)
 
+  def sqljImpl[A: c.WeakTypeTag, B: c.WeakTypeTag]
+      (c: Context)
+      (s: c.Expr[String])
+      (config: c.Expr[Configuration[A, B]]): c.Expr[Any] = 
+    sqlImpl0(c, useInputTags = false, keys = false, jdbcOnly = false)(s)(config)
+
   def sqlImpl0[A: c.WeakTypeTag, B: c.WeakTypeTag]
-      (c: Context, useInputTags: Boolean, keys: Boolean)
+      (c: Context, useInputTags: Boolean = false, keys: Boolean = false, jdbcOnly: Boolean = false)
       (s: c.Expr[String])
       (config: c.Expr[Configuration[A, B]]): c.Expr[Any] = {
 
@@ -71,7 +77,7 @@ object SqlMacro {
       case Literal(Constant(sql: String)) => sql
       case _ => c.abort(c.enclosingPosition, "Argument to macro must be a String literal")
     }
-    compile(c, useInputTags, keys, inputsInferred = true, validate = true,
+    compile(c, useInputTags, keys, jdbcOnly, inputsInferred = true, validate = true,
             sql, (p, s) => p.parseAllWith(p.stmt, s))(config, Literal(Constant(sql)))
   }
 
@@ -95,14 +101,14 @@ object SqlMacro {
       case _ => c.abort(c.enclosingPosition, "Expected String literal as first part of interpolation")
     }
 
-    compile(c, useInputTags = false, keys = false, inputsInferred = false, validate = false,
+    compile(c, useInputTags = false, keys = false, jdbcOnly = false, inputsInferred = false, validate = false,
             sql, (p, s) => p.parseWith(p.selectStmt, s))(config, sqlExpr)
   }
 
   final val bug = "Please file a bug at https://github.com/jonifreeman/sqltyped/issues"
 
   def compile[A: c.WeakTypeTag, B: c.WeakTypeTag]
-      (c: Context, useInputTags: Boolean, keys: Boolean, inputsInferred: Boolean, validate: Boolean,
+      (c: Context, useInputTags: Boolean, keys: Boolean, jdbcOnly: Boolean, inputsInferred: Boolean, validate: Boolean,
        sql: String, parse: (SqlParser, String) => ?[Ast.Statement[Option[String]]])
       (config: c.Expr[Configuration[A, B]], sqlExpr: c.Tree): c.Expr[Any] = {
 
@@ -161,34 +167,34 @@ object SqlMacro {
       meta <- Jdbc.infer(db, sql)
     } yield meta
 
-    val meta = for {
-      db        <- dbConfig
-      dialect   = Dialect.choose(db.driver)
-      parser    = dialect.parser
-      schema    <- cachedSchema(db)
-      validator = if (validate) dialect.validator else NOPValidator
-      _         <- validator.validate(db, sql)
-      stmt      <- parse(parser, sql)
-      resolved  <- Ast.resolveTables(stmt)
-      typer     = dialect.typer(schema, resolved)
-      typed     <- typer.infer(useInputTags)
-      meta      <- new Analyzer(typer).refine(resolved, typed)
-    } yield meta
+    (if (jdbcOnly) jdbc.map(Jdbc.typeMetaStatement(_)) else {
+      val meta = for {
+        db        <- dbConfig
+        dialect   = Dialect.choose(db.driver)
+        parser    = dialect.parser
+        schema    <- cachedSchema(db)
+        validator = if (validate) dialect.validator else NOPValidator
+        _         <- validator.validate(db, sql)
+        stmt      <- parse(parser, sql)
+        resolved  <- Ast.resolveTables(stmt)
+        typer     = dialect.typer(schema, resolved)
+        typed     <- typer.infer(useInputTags)
+        meta      <- new Analyzer(typer).refine(resolved, typed)
+      } yield meta
 
-    val merged = jdbc fold (
-      _ => meta,
-      jdbc => {
-        meta fold (
-          fail => {
-            c.warning(toPosition(fail), fail.message + "\nFallback to JDBC metadata. " + bug)
-            Jdbc.typeMetaStatement(jdbc).ok
-          },
-          meta => mergeMetaStatement(meta, jdbc)
-        )
-      }
-    )
-    
-    merged fold (
+      jdbc fold (
+        _ => meta,
+        jdbc => {
+          meta fold (
+            fail => {
+              c.warning(toPosition(fail), fail.message + "\nFallback to JDBC metadata. " + bug)
+              Jdbc.typeMetaStatement(jdbc).ok
+            },
+            meta => mergeMetaStatement(meta, jdbc)
+          )
+        }
+      )
+    }) fold (
       fail => c.abort(toPosition(fail), fail.message), 
       meta => generateCode(meta) 
     )
@@ -250,11 +256,14 @@ object SqlMacro {
       ) getOrElse baseValue
     }
 
-    def scalaBaseType(x: TypedValue) = 
+    def scalaBaseType(x: TypedValue) = {
+      if (x.tpe == UnknownType)
+        c.warning(c.enclosingPosition, "Query involves unknown types. You may need to add appropriate type mappers.")
       if (x.tpe.name == "Bytes") // there should be a better way to generate types
         AppliedTypeTree(Ident(c.mirror.staticClass("scala.Array")), List(Ident(c.mirror.staticClass("scala.Byte"))))
       else
         Ident(c.mirror.staticClass(x.tpe.scalaType))
+    }
 
     def scalaType(x: TypedValue) = {
       x.tag flatMap (t => tagType(t)) map (tagged =>
