@@ -77,6 +77,8 @@ private[sqltyped] object Type {
       NullType
     else if (names.contains(id))
       JdbcType(id)
+    else if (cls == null)
+      UnknownType // This could also be treated as a warning/error for unhandled type
     else
       CustomType(id, cls)
   }
