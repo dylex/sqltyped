@@ -198,12 +198,12 @@ object SqlMacro {
     def mergeType(meta: Type, jdbc: Type): ?[Type] = (meta, jdbc) match {
       case (UnknownType, t) => t.ok
       case (t, UnknownType) => t.ok
-      case (mt, jt) if mt.jdbcType != jt.jdbcType => fail("JDBC and inferred type don't match (" + mt.jdbcType + " != " + jt.jdbcType + "). " + bug)
+      case (mt, jt) if mt.name != jt.name => fail("JDBC and inferred type don't match (" + mt.jdbcType + " != " + jt.jdbcType + "). " + bug)
       case (_, t) => t.ok // prefer jdbc custom types over schemacrawler's
     }
     def mergeValue(meta: TypedValue, jdbc: MetaValue): ?[TypedValue] = for {
       tpe <- mergeType(meta.tpe, jdbc.tpe)
-    } yield TypedValue(meta.name, tpe, meta.nullable && jdbc.nullable, meta.tag, meta.term)
+    } yield meta.copy(tpe = tpe)
     def mergeLists(meta: List[TypedValue], jdbc: List[MetaValue]): ?[List[TypedValue]] =
       if (jdbc.isEmpty) meta.ok else {
         if (meta.lengthCompare(jdbc.length) != 0)

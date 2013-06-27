@@ -135,7 +135,7 @@ private[sqltyped] object Jdbc {
         try {
           meta.isNullable(i) != ParameterMetaData.parameterNoNulls
         } catch {
-          case e: SQLException => false
+          case e: SQLException => true
         })
     }
 
