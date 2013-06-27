@@ -51,7 +51,7 @@ private[sqltyped] object Type {
     , "Blob"      -> "java.sql.Blob"
     , "Boolean"   -> "scala.Boolean"
     , "Byte"      -> "scala.Byte"
-    , "Bytes"     -> "scala.Array[scala.Byte]" // XXX this may not work
+    , "Bytes"     -> "scala.Array[scala.Byte]" // handled specially in macro
     , "Clob"      -> "java.sql.Clob"
     , "Date"      -> "java.sql.Date"
     , "Double"    -> "scala.Double"
@@ -64,7 +64,7 @@ private[sqltyped] object Type {
     , "RowId"     -> "java.sql.RowId"
     , "SQLXML"    -> "java.sql.SQLXML"
     , "Short"     -> "scala.Short"
-    , "String"    -> "scala.String"
+    , "String"    -> "java.lang.String"
     , "Time"      -> "java.sql.Time"
     , "Timestamp" -> "java.sql.Timestamp"
     , "URL"       -> "java.net.URL"
@@ -133,7 +133,7 @@ private[sqltyped] object Jdbc {
           case e: SQLException => UnknownType
         },
         try {
-          meta.isNullable(i) == ParameterMetaData.parameterNullable
+          meta.isNullable(i) != ParameterMetaData.parameterNoNulls
         } catch {
           case e: SQLException => false
         })

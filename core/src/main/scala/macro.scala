@@ -99,6 +99,8 @@ object SqlMacro {
             sql, (p, s) => p.parseWith(p.selectStmt, s))(config, sqlExpr)
   }
 
+  final val bug = "Please file a bug at https://github.com/jonifreeman/sqltyped/issues"
+
   def compile[A: c.WeakTypeTag, B: c.WeakTypeTag]
       (c: Context, useInputTags: Boolean, keys: Boolean, inputsInferred: Boolean, validate: Boolean,
        sql: String, parse: (SqlParser, String) => ?[Ast.Statement[Option[String]]])
@@ -173,8 +175,6 @@ object SqlMacro {
       meta      <- new Analyzer(typer).refine(resolved, typed)
     } yield meta
 
-    val bug = "Please file a bug at https://github.com/jonifreeman/sqltyped/issues"
-
     val merged = jdbc fold (
       _ => meta,
       jdbc => {
@@ -189,7 +189,7 @@ object SqlMacro {
     )
     
     merged fold (
-      fail => c.abort(toPosition(fail), fail.message + "\n" + bug), 
+      fail => c.abort(toPosition(fail), fail.message), 
       meta => generateCode(meta) 
     )
   }
@@ -198,7 +198,7 @@ object SqlMacro {
     def mergeType(meta: Type, jdbc: Type): ?[Type] = (meta, jdbc) match {
       case (UnknownType, t) => t.ok
       case (t, UnknownType) => t.ok
-      case (mt, jt) if mt.jdbcType != jt.jdbcType => fail("JDBC and inferred type don't match")
+      case (mt, jt) if mt.jdbcType != jt.jdbcType => fail("JDBC and inferred type don't match (" + mt.jdbcType + " != " + jt.jdbcType + "). " + bug)
       case (_, t) => t.ok // prefer jdbc custom types over schemacrawler's
     }
     def mergeValue(meta: TypedValue, jdbc: MetaValue): ?[TypedValue] = for {
@@ -207,7 +207,7 @@ object SqlMacro {
     def mergeLists(meta: List[TypedValue], jdbc: List[MetaValue]): ?[List[TypedValue]] =
       if (jdbc.isEmpty) meta.ok else {
         if (meta.lengthCompare(jdbc.length) != 0)
-          fail("JDBC and inferred counts don't match")
+          fail("JDBC and inferred counts don't match (" + meta.length + " != " + jdbc.length + "). " + bug)
         else
           sequence(meta.zip(jdbc).map({ case (m,j) => mergeValue(m,j) }))
       }
@@ -250,7 +250,11 @@ object SqlMacro {
       ) getOrElse baseValue
     }
 
-    def scalaBaseType(x: TypedValue) = Ident(c.mirror.staticClass(x.tpe.scalaType))
+    def scalaBaseType(x: TypedValue) = 
+      if (x.tpe.name == "Bytes") // there should be a better way to generate types
+        AppliedTypeTree(Ident(c.mirror.staticClass("scala.Array")), List(Ident(c.mirror.staticClass("scala.Byte"))))
+      else
+        Ident(c.mirror.staticClass(x.tpe.scalaType))
 
     def scalaType(x: TypedValue) = {
       x.tag flatMap (t => tagType(t)) map (tagged =>
